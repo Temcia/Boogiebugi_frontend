@@ -213,6 +213,15 @@ export interface UpdateProductInput extends Partial<CreateProductInput> {
   isActive?: boolean;
 }
 
+export interface ProductVariant {
+  id: string;
+  sku: string;
+  size: string;
+  color?: string | null;
+  stock: number;
+  price?: number | null;
+}
+
 export interface ProductResponse {
   id: string;
   name: string;
@@ -223,7 +232,7 @@ export interface ProductResponse {
   comparePrice: number | null;
   images: string[];
   isActive: boolean;
-  variants: any[];
+  variants: ProductVariant[];
   category?: {
     id: string;
     name: string;
