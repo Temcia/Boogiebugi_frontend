@@ -2,26 +2,83 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    /* Brand palette */
+    --color-ivory: #F5F0E8;
+    --color-obsidian: #1A1A1A;
+    --color-gold: #B8A97A;
+    --color-warm-gray: #6B6560;
+    --color-charcoal: #2C2A26;
+    --color-white: #FFFFFF;
+    --color-border: #E5DDD0;
+
+    /* Semantic aliases */
+    --color-bg: var(--color-ivory);
+    --color-surface: var(--color-white);
+    --color-text: var(--color-obsidian);
+    --color-text-muted: var(--color-warm-gray);
+    --color-accent: var(--color-gold);
+
+    /* Shadcn/UI required variables */
+    --background: 36 39% 96%; /* ivory */
+    --foreground: 0 0% 10%; /* obsidian */
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 10%;
+    --primary: 0 0% 10%; /* obsidian */
+    --primary-foreground: 36 39% 96%; /* ivory */
+    --secondary: 36 39% 96%; /* ivory */
+    --secondary-foreground: 0 0% 10%;
+    --muted: 36 39% 96%;
+    --muted-foreground: 20 6% 39%; /* warm-gray */
+    --accent: 43 30% 60%; /* gold */
+    --accent-foreground: 0 0% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 36 26% 83%; /* border */
+    --input: 36 26% 83%;
+    --ring: 0 0% 10%;
+    --radius: 0.5rem;
+
+    /* Typography */
+    --font-display: Georgia, 'Times New Roman', serif;
+    --font-body: 'Inter', sans-serif;
+
+    /* Spacing */
+    --page-padding: 1.75rem;
+    --section-gap: 2.5rem;
+
+    /* Radius */
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
   }
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-[var(--color-ivory)] text-[var(--color-obsidian)] antialiased;
+    font-family: var(--font-body);
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    font-weight: 500;
+  }
 }
 
 @layer utilities {
-  .text-balance {
-    text-wrap: balance;
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
   }
 }
