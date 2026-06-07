@@ -229,7 +229,7 @@ function AddressCard({
 
 export default function CheckoutPage() {
   const router = useRouter();
-  const { user, session, isLoggedIn } = useAuthStore();
+  const { user, isLoggedIn } = useAuthStore();
   const { items, totalPrice, clearCart } = useCartStore();
   const { openRazorpay, isScriptLoading } = useRazorpay();
 
