@@ -6,10 +6,6 @@ import {
   ShieldCheck,
   RotateCcw,
   Mail,
-  Home,
-  LayoutGrid,
-  User,
-  ShoppingBag,
   Shirt,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -53,7 +49,6 @@ export default async function HomePage() {
       <SaleBanner />
       <NewArrivalsSection products={newArrivalsData} />
       <NewsletterSection />
-      <MobileBottomNav />
     </>
   );
 }
@@ -363,32 +358,3 @@ function NewsletterSection() {
   );
 }
 
-/* ── Mobile Bottom Navigation Bar ── */
-
-function MobileBottomNav() {
-  const items = [
-    { icon: Home, label: "Home", href: "/" },
-    { icon: LayoutGrid, label: "Categories", href: "/categories" },
-    { icon: User, label: "Account", href: "/account" },
-    { icon: ShoppingBag, label: "Cart", href: "/cart" },
-  ];
-
-  return (
-    <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-[var(--color-charcoal)] bg-[var(--color-obsidian)] lg:hidden">
-      <div className="flex items-center justify-around py-1.5">
-        {items.map((item) => (
-          <Link
-            key={item.label}
-            href={item.href}
-            className="flex flex-col items-center gap-0.5 px-3 py-0.5 text-[var(--color-ivory)]"
-          >
-            <item.icon className="h-4.5 w-4.5" strokeWidth={1.5} />
-            <span className="text-[9px] font-medium uppercase tracking-wider">
-              {item.label}
-            </span>
-          </Link>
-        ))}
-      </div>
-    </nav>
-  );
-}
