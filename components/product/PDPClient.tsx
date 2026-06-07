@@ -1,7 +1,8 @@
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import {
   Heart,
   Shirt,
@@ -12,12 +13,20 @@ import {
   Truck,
   RotateCcw,
   ShieldCheck,
+  X,
 } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 import { useCartStore } from "@/store/cart.store";
 import { useWishlistStore } from "@/store/wishlist.store";
+import { useAuthStore } from "@/store/auth.store";
 import { PLPProductCard } from "./PLPProductCard";
-import { ProductResponse } from "@/lib/api";
+import { createClient } from "@/lib/supabase";
+import {
+  ProductResponse,
+  Review,
+  getProductReviews,
+  submitProductReview,
+} from "@/lib/api";
 
 const allSizes = ["XS", "S", "M", "L", "XL", "XXL"];
 
@@ -32,7 +41,9 @@ interface PDPClientProps {
 }
 
 export function PDPClient({ product }: PDPClientProps) {
+  const router = useRouter();
   const { addItem, openCart } = useCartStore();
+  const { isLoggedIn } = useAuthStore();
   const {
     addItem: addWishlistItem,
     removeItem: removeWishlistItem,
@@ -52,17 +63,103 @@ export function PDPClient({ product }: PDPClientProps) {
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
   const [sizeError, setSizeError] = useState(false);
 
+  // ── Reviews state ──
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [reviewCount, setReviewCount] = useState(0);
+  const [avgRating, setAvgRating] = useState(0);
+  const [reviewsLoading, setReviewsLoading] = useState(true);
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewHover, setReviewHover] = useState(0);
+  const [reviewTitle, setReviewTitle] = useState("");
+  const [reviewBody, setReviewBody] = useState("");
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewSuccess, setReviewSuccess] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setReviewsLoading(true);
+    getProductReviews(product.id)
+      .then((data) => {
+        if (!cancelled) {
+          setReviews(data.reviews);
+          setReviewCount(data.count);
+          setAvgRating(data.avgRating);
+        }
+      })
+      .catch(() => {
+        // silently fail — show empty state
+      })
+      .finally(() => {
+        if (!cancelled) setReviewsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [product.id]);
+
+  const handleSubmitReview = async () => {
+    if (!isLoggedIn()) {
+      router.push(`/login?redirect=/product/${product.slug}`);
+      return;
+    }
+    setReviewSubmitting(true);
+    setReviewError(null);
+    try {
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+      const t = session?.access_token;
+      if (!t) throw new Error("Not authenticated");
+      await submitProductReview(
+        product.id,
+        { rating: reviewRating, title: reviewTitle || undefined, body: reviewBody || undefined },
+        t
+      );
+      // Refresh reviews
+      const data = await getProductReviews(product.id);
+      setReviews(data.reviews);
+      setReviewCount(data.count);
+      setAvgRating(data.avgRating);
+      setReviewSuccess(true);
+      setReviewTitle("");
+      setReviewBody("");
+      setReviewRating(5);
+      setTimeout(() => {
+        setShowReviewModal(false);
+        setReviewSuccess(false);
+      }, 1500);
+    } catch (err: any) {
+      setReviewError(err.message ?? "Failed to submit review. Please try again.");
+    } finally {
+      setReviewSubmitting(false);
+    }
+  };
+
   const handleAddToCart = () => {
+    if (!isLoggedIn()) {
+      router.push(`/login?redirect=/product/${product.slug}`);
+      return;
+    }
     if (!selectedSize) {
       setSizeError(true);
       return;
     }
     setSizeError(false);
+
+    // Find the real variant ID from the product's variants list
+    const matchedVariant = product.variants?.find(
+      (v) =>
+        v.size === selectedSize &&
+        (!v.color || v.color === selectedColor.name || selectedColor.name === "Default")
+    ) ?? product.variants?.find((v) => v.size === selectedSize);
+
+    const variantId = matchedVariant?.id ?? `${product.id}-${selectedSize}-${selectedColor.name}`;
+
     addItem({
       productId: product.id,
-      variantId: `${product.id}-${selectedSize}-${selectedColor.name}`,
+      variantId,
       name: product.name,
       price: product.price,
+      image: product.images?.[0] ?? undefined,
       size: selectedSize,
       color: selectedColor.name as string,
       quantity,
@@ -146,15 +243,16 @@ export function PDPClient({ product }: PDPClientProps) {
                 {Array.from({ length: 5 }).map((_, i) => (
                   <Star
                     key={i}
-                    className={`h-3 w-3 ${i < 5
+                    className={`h-3 w-3 ${
+                      i < Math.round(avgRating)
                         ? "fill-[var(--color-gold)] text-[var(--color-gold)]"
                         : "text-[var(--color-border)]"
-                      }`}
+                    }`}
                   />
                 ))}
               </div>
               <span className="text-[11px] text-[var(--color-warm-gray)]">
-                5.0 &middot; 12 reviews
+                {reviewCount > 0 ? `${avgRating.toFixed(1)} · ${reviewCount} review${reviewCount !== 1 ? "s" : ""}` : "No reviews yet"}
               </span>
             </div>
 
@@ -288,6 +386,10 @@ export function PDPClient({ product }: PDPClientProps) {
             {/* Wishlist */}
             <button
               onClick={() => {
+                if (!isLoggedIn()) {
+                  router.push(`/login?redirect=/product/${product.slug}`);
+                  return;
+                }
                 if (wishlisted) {
                   removeWishlistItem(product.id);
                 } else {
@@ -394,87 +496,205 @@ export function PDPClient({ product }: PDPClientProps) {
           {/* Average rating */}
           <div className="mt-3 flex items-center gap-3">
             <span className="text-3xl font-medium text-[var(--color-obsidian)]">
-              5.0
+              {reviewCount > 0 ? avgRating.toFixed(1) : "—"}
             </span>
             <div>
               <div className="flex items-center gap-0.5">
                 {Array.from({ length: 5 }).map((_, i) => (
                   <Star
                     key={i}
-                    className={`h-3.5 w-3.5 ${i < 5
+                    className={`h-3.5 w-3.5 ${
+                      i < Math.round(avgRating)
                         ? "fill-[var(--color-gold)] text-[var(--color-gold)]"
                         : "text-[var(--color-border)]"
-                      }`}
+                    }`}
                   />
                 ))}
               </div>
               <p className="mt-0.5 text-[11px] text-[var(--color-warm-gray)]">
-                Based on 12 reviews
+                {reviewCount > 0
+                  ? `Based on ${reviewCount} review${reviewCount !== 1 ? "s" : ""}`
+                  : "No reviews yet — be the first!"}
               </p>
             </div>
           </div>
 
-          {/* Mock reviews */}
+          {/* Reviews list */}
           <div className="mt-4 space-y-3">
-            {[
-              {
-                name: "Priya M.",
-                date: "May 2026",
-                rating: 5,
-                text: "Absolutely love the quality and fit. The fabric feels premium and the stitching is impeccable. Will definitely be ordering more pieces from BOOGIEBUGI.",
-              },
-              {
-                name: "Arjun K.",
-                date: "April 2026",
-                rating: 4,
-                text: "Great product overall. The sizing was accurate and the material is very comfortable. Took off one star because delivery took a bit longer than expected.",
-              },
-              {
-                name: "Meera S.",
-                date: "April 2026",
-                rating: 5,
-                text: "This has become my go-to brand for everyday luxury. The attention to detail is remarkable. The packaging was also beautiful — felt like a real treat unboxing it.",
-              },
-            ].map((review, i) => (
-              <div
-                key={i}
-                className="rounded-lg border border-[var(--color-border)] bg-[var(--color-white)] p-3"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] font-medium text-[var(--color-obsidian)]">
-                      {review.name}
-                    </span>
-                    <span className="rounded bg-[var(--color-gold)]/15 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-wider text-[var(--color-gold)]">
-                      Verified
+            {reviewsLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--color-gold)] border-t-transparent" />
+              </div>
+            ) : reviews.length === 0 ? (
+              <p className="py-4 text-center text-[11px] text-[var(--color-warm-gray)]">
+                No reviews yet. Be the first to share your experience!
+              </p>
+            ) : (
+              reviews.map((review) => (
+                <div
+                  key={review.id}
+                  className="rounded-lg border border-[var(--color-border)] bg-[var(--color-white)] p-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] font-medium text-[var(--color-obsidian)]">
+                        {review.user.name ?? "Customer"}
+                      </span>
+                      {review.isVerified && (
+                        <span className="rounded bg-[var(--color-gold)]/15 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-wider text-[var(--color-gold)]">
+                          Verified
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-[var(--color-warm-gray)]">
+                      {new Date(review.createdAt).toLocaleDateString("en-IN", {
+                        month: "long",
+                        year: "numeric",
+                      })}
                     </span>
                   </div>
-                  <span className="text-[10px] text-[var(--color-warm-gray)]">
-                    {review.date}
-                  </span>
-                </div>
-                <div className="mt-1 flex items-center gap-0.5">
-                  {Array.from({ length: 5 }).map((_, j) => (
-                    <Star
-                      key={j}
-                      className={`h-2.5 w-2.5 ${j < review.rating
-                          ? "fill-[var(--color-gold)] text-[var(--color-gold)]"
-                          : "text-[var(--color-border)]"
+                  {review.title && (
+                    <p className="mt-1 text-[11px] font-medium text-[var(--color-obsidian)]">
+                      {review.title}
+                    </p>
+                  )}
+                  <div className="mt-1 flex items-center gap-0.5">
+                    {Array.from({ length: 5 }).map((_, j) => (
+                      <Star
+                        key={j}
+                        className={`h-2.5 w-2.5 ${
+                          j < review.rating
+                            ? "fill-[var(--color-gold)] text-[var(--color-gold)]"
+                            : "text-[var(--color-border)]"
                         }`}
-                    />
-                  ))}
+                      />
+                    ))}
+                  </div>
+                  {review.body && (
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--color-warm-gray)]">
+                      {review.body}
+                    </p>
+                  )}
                 </div>
-                <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--color-warm-gray)]">
-                  {review.text}
-                </p>
-              </div>
-            ))}
+              ))
+            )}
           </div>
 
-          <button className="mt-4 flex h-9 items-center justify-center rounded-md border border-[var(--color-border)] px-5 text-[10px] font-medium uppercase tracking-widest text-[var(--color-obsidian)] transition-colors hover:border-[var(--color-obsidian)]">
+          <button
+            onClick={() => {
+              if (!isLoggedIn()) {
+                router.push(`/login?redirect=/product/${product.slug}`);
+                return;
+              }
+              setShowReviewModal(true);
+            }}
+            className="mt-4 flex h-9 items-center justify-center rounded-md border border-[var(--color-border)] px-5 text-[10px] font-medium uppercase tracking-widest text-[var(--color-obsidian)] transition-colors hover:border-[var(--color-obsidian)]"
+          >
             Write a Review
           </button>
         </div>
+
+        {/* ── Write a Review modal ── */}
+        {showReviewModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+            <div className="relative w-full max-w-md rounded-xl border border-[var(--color-border)] bg-[var(--color-ivory)] p-6 shadow-2xl">
+              <button
+                onClick={() => {
+                  setShowReviewModal(false);
+                  setReviewError(null);
+                  setReviewSuccess(false);
+                }}
+                className="absolute right-4 top-4 text-[var(--color-warm-gray)] transition-colors hover:text-[var(--color-obsidian)]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+
+              <h3 className="font-display text-base font-medium text-[var(--color-obsidian)]">
+                Write a Review
+              </h3>
+              <p className="mt-0.5 text-[11px] text-[var(--color-warm-gray)]">
+                {product.name}
+              </p>
+
+              {reviewSuccess ? (
+                <div className="mt-6 flex flex-col items-center gap-2 py-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-100">
+                    <svg className="h-5 w-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <p className="text-[12px] font-medium text-green-700">Review submitted!</p>
+                </div>
+              ) : (
+                <>
+                  {/* Star rating selector */}
+                  <div className="mt-4">
+                    <p className="text-[11px] font-medium text-[var(--color-obsidian)]">Your Rating</p>
+                    <div className="mt-2 flex gap-1">
+                      {Array.from({ length: 5 }).map((_, i) => (
+                        <button
+                          key={i}
+                          onMouseEnter={() => setReviewHover(i + 1)}
+                          onMouseLeave={() => setReviewHover(0)}
+                          onClick={() => setReviewRating(i + 1)}
+                          aria-label={`Rate ${i + 1} star${i !== 0 ? "s" : ""}`}
+                        >
+                          <Star
+                            className={`h-6 w-6 transition-colors ${
+                              i < (reviewHover || reviewRating)
+                                ? "fill-[var(--color-gold)] text-[var(--color-gold)]"
+                                : "text-[var(--color-border)]"
+                            }`}
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Title */}
+                  <div className="mt-4">
+                    <label className="text-[11px] font-medium text-[var(--color-obsidian)]">
+                      Title <span className="text-[var(--color-warm-gray)] font-normal">(optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={reviewTitle}
+                      onChange={(e) => setReviewTitle(e.target.value)}
+                      placeholder="Sum up your experience"
+                      className="mt-1.5 w-full rounded-md border border-[var(--color-border)] bg-white px-3 py-2 text-[12px] text-[var(--color-obsidian)] outline-none placeholder:text-[var(--color-warm-gray)]/60 focus:border-[var(--color-obsidian)]"
+                    />
+                  </div>
+
+                  {/* Body */}
+                  <div className="mt-3">
+                    <label className="text-[11px] font-medium text-[var(--color-obsidian)]">
+                      Review <span className="text-[var(--color-warm-gray)] font-normal">(optional)</span>
+                    </label>
+                    <textarea
+                      value={reviewBody}
+                      onChange={(e) => setReviewBody(e.target.value)}
+                      placeholder="Tell us what you think about this product"
+                      rows={4}
+                      className="mt-1.5 w-full resize-none rounded-md border border-[var(--color-border)] bg-white px-3 py-2 text-[12px] text-[var(--color-obsidian)] outline-none placeholder:text-[var(--color-warm-gray)]/60 focus:border-[var(--color-obsidian)]"
+                    />
+                  </div>
+
+                  {reviewError && (
+                    <p className="mt-2 text-[11px] text-red-600">{reviewError}</p>
+                  )}
+
+                  <button
+                    onClick={handleSubmitReview}
+                    disabled={reviewSubmitting}
+                    className="mt-4 flex h-10 w-full items-center justify-center rounded-md bg-[var(--color-obsidian)] text-[10px] font-medium uppercase tracking-widest text-[var(--color-ivory)] transition-colors hover:bg-[var(--color-gold)] hover:text-[var(--color-obsidian)] disabled:opacity-60"
+                  >
+                    {reviewSubmitting ? "Submitting…" : "Submit Review"}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ── You may also like ── */}
         {related.length > 0 && (

@@ -17,34 +17,24 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ChevronLeft, Shirt, Plus, Shield, RefreshCw, Truck, Tag, Check, X, AlertCircle } from "lucide-react";
+import { ChevronLeft, Shirt, Shield, RefreshCw, Truck, Tag, Check, AlertCircle, Plus, X } from "lucide-react";
 import { useCartStore } from "@/store/cart.store";
 import { useAuthStore } from "@/store/auth.store";
 import { formatPrice } from "@/lib/utils";
 import { useRazorpay } from "@/hooks/useRazorpay";
+import { createClient } from "@/lib/supabase";
 import {
   createRazorpayOrder,
   verifyRazorpayPayment,
   createOrder,
+  getAddresses,
+  Address,
   ApiError,
 } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface SavedAddress {
-  id: string;
-  label: string;
-  fullName: string;
-  phone: string;
-  line1: string;
-  line2?: string;
-  city: string;
-  state: string;
-  pincode: string;
-  isDefault: boolean;
-}
 
 interface AddressFormData {
   fullName: string;
@@ -56,37 +46,6 @@ interface AddressFormData {
   pincode: string;
   saveAddress: boolean;
 }
-
-// ---------------------------------------------------------------------------
-// Mock saved addresses (replace with API call in Phase 3 backend wiring)
-// ---------------------------------------------------------------------------
-
-const MOCK_SAVED_ADDRESSES: SavedAddress[] = [
-  {
-    id: "addr-1",
-    label: "Home",
-    fullName: "Arjun Sharma",
-    phone: "9876543210",
-    line1: "42, Rose Garden Apartments",
-    line2: "Sector 14, Rohini",
-    city: "New Delhi",
-    state: "Delhi",
-    pincode: "110085",
-    isDefault: true,
-  },
-  {
-    id: "addr-2",
-    label: "Office",
-    fullName: "Arjun Sharma",
-    phone: "9876543210",
-    line1: "Tower C, 8th Floor, Cyber Hub",
-    line2: "DLF Phase 2",
-    city: "Gurugram",
-    state: "Haryana",
-    pincode: "122002",
-    isDefault: false,
-  },
-];
 
 // Free shipping threshold in paise (₹2,999)
 const FREE_SHIPPING_THRESHOLD = 299900;
@@ -207,7 +166,7 @@ function AddressCard({
   selected,
   onSelect,
 }: {
-  address: SavedAddress;
+  address: Address;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -242,7 +201,7 @@ function AddressCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5">
             <span className="text-xs font-medium uppercase tracking-widest text-[var(--color-warm-gray)]">
-              {address.label}
+              {address.name.split(' ')[0]}'s Address
             </span>
             {address.isDefault && (
               <span className="text-[10px] font-medium uppercase tracking-widest px-1.5 py-0.5 bg-[var(--color-ivory)] text-[var(--color-warm-gray)] rounded-sm">
@@ -251,7 +210,7 @@ function AddressCard({
             )}
           </div>
           <p className="text-sm text-[var(--color-obsidian)] font-medium">
-            {address.fullName}
+            {address.name}
           </p>
           <p className="text-sm text-[var(--color-warm-gray)] leading-snug mt-0.5">
             {address.line1}
@@ -267,10 +226,6 @@ function AddressCard({
     </button>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Main page component
-// ---------------------------------------------------------------------------
 
 export default function CheckoutPage() {
   const router = useRouter();
@@ -288,10 +243,11 @@ export default function CheckoutPage() {
   }, [isLoggedIn, items.length, router]);
 
   // — address state
-  const [selectedAddressId, setSelectedAddressId] = useState<string>(
-    MOCK_SAVED_ADDRESSES.find((a) => a.isDefault)?.id ?? MOCK_SAVED_ADDRESSES[0]?.id ?? ""
-  );
-  const [showAddForm, setShowAddForm] = useState(false);
+  const [savedAddresses, setSavedAddresses] = useState<Address[]>([]);
+  const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
+  const [showAddForm, setShowAddForm] = useState(true);
+  const [isLoadingAddresses, setIsLoadingAddresses] = useState(true);
+
   const [addressForm, setAddressForm] = useState<AddressFormData>({
     fullName: user?.name ?? "",
     phone: user?.phone ?? "",
@@ -302,6 +258,31 @@ export default function CheckoutPage() {
     pincode: "",
     saveAddress: true,
   });
+
+  // Fetch saved addresses on mount
+  useEffect(() => {
+    async function loadAddresses() {
+      if (!isLoggedIn()) return;
+      try {
+        const supabase = createClient();
+        const { data: { session: liveSession } } = await supabase.auth.getSession();
+        if (!liveSession?.access_token) return;
+
+        const data = await getAddresses(liveSession.access_token);
+        setSavedAddresses(data);
+        if (data.length > 0) {
+          const defaultAddr = data.find((a) => a.isDefault) || data[0];
+          setSelectedAddressId(defaultAddr.id);
+          setShowAddForm(false);
+        }
+      } catch (err) {
+        console.error("Failed to load addresses", err);
+      } finally {
+        setIsLoadingAddresses(false);
+      }
+    }
+    loadAddresses();
+  }, [isLoggedIn]);
 
   // — contact
   const [email, setEmail] = useState(user?.email ?? "");
@@ -363,7 +344,7 @@ export default function CheckoutPage() {
   async function handlePlaceOrder() {
     setOrderError(null);
 
-    // Validate: address selected or new address form fully filled
+    // Validate: all required address fields filled if adding new, or existing selected
     const hasNewAddress =
       showAddForm &&
       addressForm.fullName &&
@@ -372,9 +353,10 @@ export default function CheckoutPage() {
       addressForm.city &&
       addressForm.state &&
       addressForm.pincode;
+      
     const hasSavedAddress = !showAddForm && !!selectedAddressId;
 
-    if (!hasSavedAddress && !hasNewAddress) {
+    if (!hasNewAddress && !hasSavedAddress) {
       setOrderError(
         showAddForm
           ? "Please fill in all required address fields."
@@ -383,9 +365,11 @@ export default function CheckoutPage() {
       return;
     }
 
-    // Extract Supabase access token from persisted session object
-    const token =
-      (session as { access_token?: string } | null)?.access_token ?? "";
+    // Get a fresh Supabase session — auto-refreshes if the token is expired.
+    // Do NOT rely on the persisted Zustand session; it can be stale/expired.
+    const supabase = createClient();
+    const { data: { session: liveSession } } = await supabase.auth.getSession();
+    const token = liveSession?.access_token ?? "";
 
     if (!token) {
       router.replace("/login?redirect=/checkout");
@@ -426,25 +410,25 @@ export default function CheckoutPage() {
               token
             );
 
-            // Step 4 — create order in DB (CONFIRMED status set by backend)
-            // Send cart snapshot — backend never reads from Zustand
+            // Step 4 — create order in DB
+            const addressPayload = hasSavedAddress
+              ? { addressId: selectedAddressId! }
+              : {
+                  newAddress: {
+                    name: addressForm.fullName,
+                    phone: addressForm.phone,
+                    line1: addressForm.line1,
+                    line2: addressForm.line2 || undefined,
+                    city: addressForm.city,
+                    state: addressForm.state,
+                    pincode: addressForm.pincode,
+                    save: addressForm.saveAddress,
+                  },
+                };
+
             const order = await createOrder(
               {
-                // Address: either existing id or inline new address object
-                ...(hasSavedAddress
-                  ? { addressId: selectedAddressId }
-                  : {
-                      newAddress: {
-                        name: addressForm.fullName,
-                        phone: addressForm.phone,
-                        line1: addressForm.line1,
-                        line2: addressForm.line2 || undefined,
-                        city: addressForm.city,
-                        state: addressForm.state,
-                        pincode: addressForm.pincode,
-                        save: addressForm.saveAddress,
-                      },
-                    }),
+                ...addressPayload,
                 paymentId: paymentResponse.razorpay_payment_id,
                 items: items.map((item) => ({
                   variantId: item.variantId,
@@ -537,7 +521,6 @@ export default function CheckoutPage() {
               LEFT COLUMN — Checkout form
               ================================================================ */}
           <div className="flex-1 min-w-0 flex flex-col gap-8">
-
             {/* ── Section A — Contact ────────────────────────────────────── */}
             <section>
               <SectionHeading>Contact</SectionHeading>
@@ -566,154 +549,162 @@ export default function CheckoutPage() {
             <section>
               <SectionHeading>Delivery Address</SectionHeading>
 
-              {/* Saved address cards */}
-              {MOCK_SAVED_ADDRESSES.length > 0 && (
-                <div className="flex flex-col gap-3 mb-4">
-                  {MOCK_SAVED_ADDRESSES.map((addr) => (
-                    <AddressCard
-                      key={addr.id}
-                      address={addr}
-                      selected={selectedAddressId === addr.id && !showAddForm}
-                      onSelect={() => {
-                        setSelectedAddressId(addr.id);
-                        setShowAddForm(false);
-                      }}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {/* Add new address toggle */}
-              <button
-                type="button"
-                onClick={() => {
-                  setShowAddForm((v) => !v);
-                  if (!showAddForm) setSelectedAddressId("");
-                }}
-                className="
-                  flex items-center gap-2 text-sm font-medium
-                  text-[var(--color-obsidian)] hover:text-[var(--color-warm-gray)]
-                  transition-colors duration-150
-                "
-              >
-                {showAddForm ? (
-                  <X className="w-4 h-4" />
-                ) : (
-                  <Plus className="w-4 h-4" />
-                )}
-                {showAddForm ? "Cancel" : "Add New Address"}
-              </button>
-
-              {/* New address form */}
-              {showAddForm && (
-                <div className="mt-4 p-4 bg-[var(--color-white)] border border-[var(--color-border)] rounded-[var(--radius-md)] flex flex-col gap-4">
-                  <InputField
-                    id="addr-fullName"
-                    name="fullName"
-                    label="Full Name"
-                    placeholder="As on ID"
-                    value={addressForm.fullName}
-                    onChange={handleAddressFormChange}
-                  />
-                  <InputField
-                    id="addr-phone"
-                    name="phone"
-                    label="Phone"
-                    type="tel"
-                    placeholder="10-digit mobile number"
-                    maxLength={10}
-                    value={addressForm.phone}
-                    onChange={handleAddressFormChange}
-                  />
-                  <InputField
-                    id="addr-line1"
-                    name="line1"
-                    label="Address Line 1"
-                    placeholder="House / Flat no., Building name"
-                    value={addressForm.line1}
-                    onChange={handleAddressFormChange}
-                  />
-                  <InputField
-                    id="addr-line2"
-                    name="line2"
-                    label="Address Line 2"
-                    optional
-                    placeholder="Area, Locality, Landmark"
-                    value={addressForm.line2}
-                    onChange={handleAddressFormChange}
-                  />
-                  <div className="grid grid-cols-2 gap-4">
-                    <InputField
-                      id="addr-city"
-                      name="city"
-                      label="City"
-                      placeholder="e.g. Mumbai"
-                      value={addressForm.city}
-                      onChange={handleAddressFormChange}
-                    />
-                    <SelectField
-                      id="addr-state"
-                      name="state"
-                      label="State"
-                      value={addressForm.state}
-                      onChange={handleAddressFormChange}
-                    >
-                      <option value="" disabled>
-                        Select state
-                      </option>
-                      {INDIA_STATES.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
+              {isLoadingAddresses ? (
+                <div className="p-4 text-sm text-[var(--color-warm-gray)]">Loading addresses...</div>
+              ) : (
+                <>
+                  {/* Saved address cards */}
+                  {savedAddresses.length > 0 && (
+                    <div className="flex flex-col gap-3 mb-4">
+                      {savedAddresses.map((addr) => (
+                        <AddressCard
+                          key={addr.id}
+                          address={addr}
+                          selected={selectedAddressId === addr.id && !showAddForm}
+                          onSelect={() => {
+                            setSelectedAddressId(addr.id);
+                            setShowAddForm(false);
+                          }}
+                        />
                       ))}
-                    </SelectField>
-                  </div>
-                  <InputField
-                    id="addr-pincode"
-                    name="pincode"
-                    label="Pincode"
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]{6}"
-                    maxLength={6}
-                    placeholder="6-digit pincode"
-                    value={addressForm.pincode}
-                    onChange={handleAddressFormChange}
-                  />
+                    </div>
+                  )}
 
-                  {/* Save address checkbox */}
-                  <label
-                    htmlFor="addr-save"
-                    className="flex items-center gap-2.5 cursor-pointer select-none"
-                  >
-                    <span
-                      className={`
-                        w-4 h-4 flex-shrink-0 rounded-sm border flex items-center justify-center
+                  {/* Add new address toggle (only show toggle if user has saved addresses) */}
+                  {savedAddresses.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAddForm((v) => !v);
+                        if (!showAddForm) setSelectedAddressId(null);
+                      }}
+                      className="
+                        flex items-center gap-2 text-sm font-medium mb-4
+                        text-[var(--color-obsidian)] hover:text-[var(--color-warm-gray)]
                         transition-colors duration-150
-                        ${
-                          addressForm.saveAddress
-                            ? "bg-[var(--color-obsidian)] border-[var(--color-obsidian)]"
-                            : "bg-[var(--color-white)] border-[var(--color-border)]"
-                        }
-                      `}
+                      "
                     >
-                      {addressForm.saveAddress && (
-                        <Check className="w-2.5 h-2.5 text-[var(--color-ivory)]" />
+                      {showAddForm ? (
+                        <X className="w-4 h-4" />
+                      ) : (
+                        <Plus className="w-4 h-4" />
                       )}
-                    </span>
-                    <input
-                      id="addr-save"
-                      type="checkbox"
-                      name="saveAddress"
-                      className="sr-only"
-                      checked={addressForm.saveAddress}
-                      onChange={handleAddressFormChange}
-                    />
-                    <span className="text-sm text-[var(--color-warm-gray)]">
-                      Save this address for future orders
-                    </span>
-                  </label>
-                </div>
+                      {showAddForm ? "Cancel" : "Add New Address"}
+                    </button>
+                  )}
+
+                  {/* New address form */}
+                  {showAddForm && (
+                    <div className="p-4 bg-[var(--color-white)] border border-[var(--color-border)] rounded-[var(--radius-md)] flex flex-col gap-4">
+                      <InputField
+                        id="addr-fullName"
+                        name="fullName"
+                        label="Full Name"
+                        placeholder="As on ID"
+                        value={addressForm.fullName}
+                        onChange={handleAddressFormChange}
+                      />
+                      <InputField
+                        id="addr-phone"
+                        name="phone"
+                        label="Phone"
+                        type="tel"
+                        placeholder="10-digit mobile number"
+                        maxLength={10}
+                        value={addressForm.phone}
+                        onChange={handleAddressFormChange}
+                      />
+                      <InputField
+                        id="addr-line1"
+                        name="line1"
+                        label="Address Line 1"
+                        placeholder="House / Flat no., Building name"
+                        value={addressForm.line1}
+                        onChange={handleAddressFormChange}
+                      />
+                      <InputField
+                        id="addr-line2"
+                        name="line2"
+                        label="Address Line 2"
+                        optional
+                        placeholder="Area, Locality, Landmark"
+                        value={addressForm.line2}
+                        onChange={handleAddressFormChange}
+                      />
+                      <div className="grid grid-cols-2 gap-4">
+                        <InputField
+                          id="addr-city"
+                          name="city"
+                          label="City"
+                          placeholder="e.g. Mumbai"
+                          value={addressForm.city}
+                          onChange={handleAddressFormChange}
+                        />
+                        <SelectField
+                          id="addr-state"
+                          name="state"
+                          label="State"
+                          value={addressForm.state}
+                          onChange={handleAddressFormChange}
+                        >
+                          <option value="" disabled>
+                            Select state
+                          </option>
+                          {INDIA_STATES.map((s) => (
+                            <option key={s} value={s}>
+                              {s}
+                            </option>
+                          ))}
+                        </SelectField>
+                      </div>
+                      <InputField
+                        id="addr-pincode"
+                        name="pincode"
+                        label="Pincode"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]{6}"
+                        maxLength={6}
+                        placeholder="6-digit pincode"
+                        value={addressForm.pincode}
+                        onChange={handleAddressFormChange}
+                      />
+
+                      {/* Save address checkbox */}
+                      <label
+                        htmlFor="addr-save"
+                        className="flex items-center gap-2.5 cursor-pointer select-none"
+                      >
+                        <span
+                          className={`
+                            w-4 h-4 flex-shrink-0 rounded-sm border flex items-center justify-center
+                            transition-colors duration-150
+                            ${
+                              addressForm.saveAddress
+                                ? "bg-[var(--color-obsidian)] border-[var(--color-obsidian)]"
+                                : "bg-[var(--color-white)] border-[var(--color-border)]"
+                            }
+                          `}
+                        >
+                          {addressForm.saveAddress && (
+                            <Check className="w-2.5 h-2.5 text-[var(--color-ivory)]" />
+                          )}
+                        </span>
+                        <input
+                          id="addr-save"
+                          type="checkbox"
+                          name="saveAddress"
+                          className="sr-only"
+                          checked={addressForm.saveAddress}
+                          onChange={handleAddressFormChange}
+                        />
+                        <span className="text-sm text-[var(--color-warm-gray)]">
+                          Save this address for future orders
+                        </span>
+                      </label>
+                    </div>
+                  )}
+                </>
               )}
             </section>
           </div>
@@ -729,12 +720,20 @@ export default function CheckoutPage() {
               <ul className="flex flex-col gap-4">
                 {items.map((item) => (
                   <li key={item.variantId} className="flex gap-3">
-                    {/* Image placeholder */}
+                    {/* Product image */}
                     <div
-                      className="w-16 h-20 flex-shrink-0 rounded-[var(--radius-md)] bg-[var(--color-ivory)] border border-[var(--color-border)] flex items-center justify-center overflow-hidden"
-                      aria-hidden
+                      className="w-16 h-20 flex-shrink-0 rounded-[var(--radius-md)] bg-[var(--color-ivory)] border border-[var(--color-border)] overflow-hidden flex items-center justify-center"
                     >
-                      <Shirt className="w-5 h-5 text-[var(--color-border)]" />
+                      {item.image ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={item.image}
+                          alt={item.name}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <Shirt className="w-5 h-5 text-[var(--color-border)]" />
+                      )}
                     </div>
 
                     {/* Item info */}

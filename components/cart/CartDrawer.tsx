@@ -1,12 +1,19 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { X, Minus, Plus, Shirt } from "lucide-react";
 import { useCartStore } from "@/store/cart.store";
 import { formatPrice } from "@/lib/utils";
 
 export function CartDrawer() {
+  const router = useRouter();
   const { items, isOpen, closeCart, removeItem, updateQuantity, totalPrice } =
     useCartStore();
+
+  function handleCheckout() {
+    closeCart();
+    router.push("/checkout");
+  }
 
   if (!isOpen) return null;
 
@@ -59,11 +66,18 @@ export function CartDrawer() {
                     key={item.variantId}
                     className="flex gap-3 rounded-lg border border-[var(--color-border)] p-2.5"
                   >
-                    {/* Image placeholder */}
-                    <div className="h-16 w-16 shrink-0 rounded-md bg-[var(--color-border)]">
-                      <div className="flex h-full items-center justify-center">
+                    {/* Product image */}
+                    <div className="h-16 w-16 shrink-0 rounded-md bg-[var(--color-ivory)] border border-[var(--color-border)] overflow-hidden flex items-center justify-center">
+                      {item.image ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={item.image}
+                          alt={item.name}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
                         <Shirt className="h-5 w-5 text-[var(--color-warm-gray)] opacity-20" />
-                      </div>
+                      )}
                     </div>
 
                     {/* Info */}
@@ -142,7 +156,10 @@ export function CartDrawer() {
               <p className="text-[10px] text-[var(--color-warm-gray)]">
                 Shipping calculated at checkout
               </p>
-              <button className="flex h-10 w-full items-center justify-center rounded-md bg-[var(--color-obsidian)] text-[10px] font-medium uppercase tracking-widest text-[var(--color-ivory)] transition-colors hover:bg-[var(--color-gold)] hover:text-[var(--color-obsidian)]">
+              <button
+                onClick={handleCheckout}
+                className="flex h-10 w-full items-center justify-center rounded-md bg-[var(--color-obsidian)] text-[10px] font-medium uppercase tracking-widest text-[var(--color-ivory)] transition-colors hover:bg-[var(--color-gold)] hover:text-[var(--color-obsidian)]"
+              >
                 Proceed to Checkout
               </button>
               <button

@@ -1,12 +1,7 @@
 "use client";
 
 // Order Detail / Confirmation page — /orders/[id]
-//
-// Shows after a successful payment. Pulls order data from the API.
-// Until backend is wired, renders a polished mock so the redirect from
-// checkout lands on a real, styled page.
-//
-// Phase 3 TODO: replace mock with real `getOrder(id, token)` call.
+// Shows after successful payment — pulls REAL order data from the API.
 
 import { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
@@ -23,84 +18,8 @@ import {
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth.store";
 import { formatPrice } from "@/lib/utils";
-
-// ---------------------------------------------------------------------------
-// Types (mirrors lib/api.ts shapes)
-// ---------------------------------------------------------------------------
-
-interface OrderItem {
-  id: string;
-  productName: string;
-  size: string;
-  color: string;
-  quantity: number;
-  price: number; // paise
-  image?: string;
-}
-
-interface ShippingAddress {
-  fullName: string;
-  phone: string;
-  line1: string;
-  line2?: string;
-  city: string;
-  state: string;
-  pincode: string;
-}
-
-interface Order {
-  id: string;
-  status: string;
-  total: number; // paise
-  subtotal: number;
-  shipping: number;
-  discount: number;
-  createdAt: string;
-  estimatedDelivery: string;
-  items: OrderItem[];
-  address: ShippingAddress;
-  awbNumber?: string;
-  paymentId: string;
-}
-
-// ---------------------------------------------------------------------------
-// Mock order — replace with API call when backend is wired
-// ---------------------------------------------------------------------------
-
-function buildMockOrder(id: string): Order {
-  return {
-    id,
-    status: "CONFIRMED",
-    total: 349900,
-    subtotal: 349900,
-    shipping: 0,
-    discount: 0,
-    createdAt: new Date().toISOString(),
-    estimatedDelivery: new Date(
-      Date.now() + 5 * 24 * 60 * 60 * 1000
-    ).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" }),
-    paymentId: "pay_mock_" + id.slice(-8),
-    items: [
-      {
-        id: "item-1",
-        productName: "Linen Structured Shirt",
-        size: "M",
-        color: "Ivory",
-        quantity: 1,
-        price: 349900,
-      },
-    ],
-    address: {
-      fullName: "Arjun Sharma",
-      phone: "9876543210",
-      line1: "42, Rose Garden Apartments",
-      line2: "Sector 14, Rohini",
-      city: "New Delhi",
-      state: "Delhi",
-      pincode: "110085",
-    },
-  };
-}
+import { createClient } from "@/lib/supabase";
+import { getOrder, Order } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Status label + color
@@ -228,6 +147,7 @@ export default function OrderDetailPage() {
 
   const [order, setOrder] = useState<Order | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isLoggedIn()) {
@@ -235,19 +155,42 @@ export default function OrderDetailPage() {
       return;
     }
 
-    // Phase 3 TODO: replace with real API call:
-    //   const token = (session as { access_token?: string } | null)?.access_token ?? "";
-    //   const data = await getOrder(params.id, token);
-    //   setOrder(data);
-    const mock = buildMockOrder(params.id);
-    setOrder(mock);
-    setIsLoading(false);
+    async function load() {
+      try {
+        const supabase = createClient();
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) {
+          router.replace("/login");
+          return;
+        }
+        const data = await getOrder(params.id, session.access_token);
+        setOrder(data);
+      } catch (err) {
+        console.error("Failed to load order:", err);
+        setError("Could not load order. Please try again.");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    load();
   }, [isLoggedIn, params.id, router]);
 
-  if (isLoading || !order) {
+  if (isLoading) {
     return (
       <div className="min-h-screen bg-[var(--color-ivory)] flex items-center justify-center">
         <div className="w-6 h-6 border-2 border-[var(--color-obsidian)] border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (error || !order) {
+    return (
+      <div className="min-h-screen bg-[var(--color-ivory)] flex flex-col items-center justify-center gap-4">
+        <Package className="w-10 h-10 text-[var(--color-warm-gray)]" />
+        <p className="text-sm text-[var(--color-warm-gray)]">{error ?? "Order not found."}</p>
+        <Link href="/account/orders" className="text-sm font-medium text-[var(--color-obsidian)] underline">
+          View all orders
+        </Link>
       </div>
     );
   }
@@ -261,7 +204,16 @@ export default function OrderDetailPage() {
     minute: "2-digit",
   });
 
+  // Estimate delivery: +7 days from placed date
+  const estimatedDelivery = new Date(
+    new Date(order.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000
+  ).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+
   const shortId = order.id.slice(-8).toUpperCase();
+
+  // Derive subtotal from items
+  const subtotal = order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const shipping = order.total - subtotal + (order.discount ?? 0);
 
   return (
     <div
@@ -326,7 +278,7 @@ export default function OrderDetailPage() {
           <p className="text-xs text-center text-[var(--color-warm-gray)] mt-5">
             Estimated delivery:{" "}
             <span className="font-medium text-[var(--color-obsidian)]">
-              {order.estimatedDelivery}
+              {estimatedDelivery}
             </span>
           </p>
         </div>
@@ -346,12 +298,21 @@ export default function OrderDetailPage() {
             <ul className="flex flex-col gap-4">
               {order.items.map((item) => (
                 <li key={item.id} className="flex gap-3">
+                  {/* Product image or fallback */}
                   <div
-                    className="w-14 h-18 flex-shrink-0 rounded-[var(--radius-md)] bg-[var(--color-ivory)] border border-[var(--color-border)] flex items-center justify-center"
-                    aria-hidden
+                    className="w-14 flex-shrink-0 rounded-[var(--radius-md)] bg-[var(--color-ivory)] border border-[var(--color-border)] overflow-hidden flex items-center justify-center"
                     style={{ height: "4.5rem" }}
                   >
-                    <Shirt className="w-5 h-5 text-[var(--color-border)]" />
+                    {item.image ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={item.image}
+                        alt={item.productName}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <Shirt className="w-5 h-5 text-[var(--color-border)]" />
+                    )}
                   </div>
                   <div className="flex-1 min-w-0 flex flex-col justify-between py-0.5">
                     <div>
@@ -359,7 +320,7 @@ export default function OrderDetailPage() {
                         {item.productName}
                       </p>
                       <p className="text-xs text-[var(--color-warm-gray)] mt-0.5">
-                        {item.size} · {item.color}
+                        {item.size}{item.color ? ` · ${item.color}` : ""}
                       </p>
                     </div>
                     <div className="flex items-center justify-between mt-1">
@@ -377,25 +338,20 @@ export default function OrderDetailPage() {
 
             {/* Price summary */}
             <div className="pt-3 border-t border-[var(--color-border)] flex flex-col gap-1.5">
-              {order.shipping === 0 ? (
-                <div className="flex justify-between text-sm">
-                  <span className="text-[var(--color-warm-gray)]">Shipping</span>
-                  <span className="text-[var(--color-gold)]">Free</span>
-                </div>
-              ) : (
-                <div className="flex justify-between text-sm">
-                  <span className="text-[var(--color-warm-gray)]">Shipping</span>
-                  <span className="text-[var(--color-obsidian)]">
-                    {formatPrice(order.shipping)}
-                  </span>
-                </div>
-              )}
-              {order.discount > 0 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-[var(--color-warm-gray)]">Subtotal</span>
+                <span className="text-[var(--color-obsidian)]">{formatPrice(subtotal)}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-[var(--color-warm-gray)]">Shipping</span>
+                <span className={shipping <= 0 ? "text-[var(--color-gold)]" : "text-[var(--color-obsidian)]"}>
+                  {shipping <= 0 ? "Free" : formatPrice(shipping)}
+                </span>
+              </div>
+              {(order.discount ?? 0) > 0 && (
                 <div className="flex justify-between text-sm">
                   <span className="text-[var(--color-gold)]">Discount</span>
-                  <span className="text-[var(--color-gold)]">
-                    −{formatPrice(order.discount)}
-                  </span>
+                  <span className="text-[var(--color-gold)]">−{formatPrice(order.discount)}</span>
                 </div>
               )}
               <div className="flex justify-between mt-1">
@@ -466,17 +422,19 @@ export default function OrderDetailPage() {
                 </div>
 
                 {/* Payment ID */}
-                <div>
-                  <p className="text-[10px] uppercase tracking-widest text-[var(--color-warm-gray)] mb-0.5">
-                    Payment ID
-                  </p>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-medium text-[var(--color-obsidian)] truncate max-w-[120px]">
-                      {order.paymentId}
-                    </span>
-                    <CopyButton value={order.paymentId} />
+                {order.paymentId && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-widest text-[var(--color-warm-gray)] mb-0.5">
+                      Payment ID
+                    </p>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-medium text-[var(--color-obsidian)] truncate max-w-[120px]">
+                        {order.paymentId}
+                      </span>
+                      <CopyButton value={order.paymentId} />
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Placed at */}
                 <div>

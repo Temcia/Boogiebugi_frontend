@@ -1,9 +1,6 @@
 "use client";
 
-// /account/orders — Order history page
-//
-// Lists all orders for the authenticated user.
-// Uses mock data until backend is wired (Phase 3 TODO marked inline).
+// /account/orders — Real order history page
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -20,67 +17,8 @@ import {
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth.store";
 import { formatPrice } from "@/lib/utils";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface OrderItem {
-  id: string;
-  productName: string;
-  size: string;
-  color: string;
-  quantity: number;
-  price: number;
-  image?: string;
-}
-
-interface Order {
-  id: string;
-  status: string;
-  total: number;
-  createdAt: string;
-  itemCount: number;
-  previewItems: OrderItem[];
-}
-
-// ---------------------------------------------------------------------------
-// Mock order history
-// ---------------------------------------------------------------------------
-
-const MOCK_ORDERS: Order[] = [
-  {
-    id: "ord_lk9xq2p4mn3a",
-    status: "DELIVERED",
-    total: 698000,
-    createdAt: new Date(Date.now() - 12 * 24 * 60 * 60 * 1000).toISOString(),
-    itemCount: 2,
-    previewItems: [
-      { id: "i1", productName: "Linen Structured Shirt", size: "M", color: "Ivory", quantity: 1, price: 349000 },
-      { id: "i2", productName: "Relaxed Cargo Pants", size: "32", color: "Charcoal", quantity: 1, price: 349000 },
-    ],
-  },
-  {
-    id: "ord_mk1yp3q5no4b",
-    status: "SHIPPED",
-    total: 349900,
-    createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-    itemCount: 1,
-    previewItems: [
-      { id: "i3", productName: "Oversized Cotton Tee", size: "L", color: "Obsidian", quantity: 1, price: 349900 },
-    ],
-  },
-  {
-    id: "ord_pn2zr4s6op5c",
-    status: "CONFIRMED",
-    total: 189900,
-    createdAt: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
-    itemCount: 1,
-    previewItems: [
-      { id: "i4", productName: "Silk Blend Scarf", size: "One Size", color: "Gold", quantity: 1, price: 189900 },
-    ],
-  },
-];
+import { createClient } from "@/lib/supabase";
+import { getOrders, Order } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Status display config
@@ -150,19 +88,27 @@ function OrderCard({ order }: { order: Order }) {
 
       {/* ── Preview items ── */}
       <div className="flex gap-2 mb-4">
-        {order.previewItems.slice(0, 3).map((item) => (
+        {order.items.slice(0, 3).map((item) => (
           <div
             key={item.id}
-            className="w-12 h-16 flex-shrink-0 rounded-[var(--radius-md)] bg-[var(--color-ivory)] border border-[var(--color-border)] flex items-center justify-center"
-            aria-hidden
+            className="w-12 h-16 flex-shrink-0 rounded-[var(--radius-md)] bg-[var(--color-ivory)] border border-[var(--color-border)] overflow-hidden flex items-center justify-center"
           >
-            <Shirt className="w-4 h-4 text-[var(--color-border)]" />
+            {item.image ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={item.image}
+                alt={item.productName}
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <Shirt className="w-4 h-4 text-[var(--color-border)]" />
+            )}
           </div>
         ))}
-        {order.itemCount > 3 && (
+        {order.items.length > 3 && (
           <div className="w-12 h-16 flex-shrink-0 rounded-[var(--radius-md)] bg-[var(--color-ivory)] border border-[var(--color-border)] flex items-center justify-center">
             <span className="text-xs text-[var(--color-warm-gray)]">
-              +{order.itemCount - 3}
+              +{order.items.length - 3}
             </span>
           </div>
         )}
@@ -171,10 +117,10 @@ function OrderCard({ order }: { order: Order }) {
       {/* ── Item names ── */}
       <div className="mb-3">
         <p className="text-sm text-[var(--color-obsidian)] leading-snug line-clamp-1">
-          {order.previewItems.map((i) => i.productName).join(", ")}
+          {order.items.map((i) => i.productName).join(", ")}
         </p>
         <p className="text-xs text-[var(--color-warm-gray)] mt-0.5">
-          {order.itemCount} {order.itemCount === 1 ? "item" : "items"}
+          {order.items.length} {order.items.length === 1 ? "item" : "items"}
         </p>
       </div>
 
@@ -268,12 +214,23 @@ export default function OrdersPage() {
       return;
     }
 
-    // Phase 3 TODO: replace with real API call:
-    //   const token = (session as { access_token?: string } | null)?.access_token ?? "";
-    //   const { orders } = await getOrders(token);
-    //   setOrders(orders);
-    setOrders(MOCK_ORDERS);
-    setIsLoading(false);
+    async function load() {
+      try {
+        const supabase = createClient();
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) {
+          router.replace("/login?redirect=/account/orders");
+          return;
+        }
+        const { orders: data } = await getOrders(session.access_token);
+        setOrders(data);
+      } catch (err) {
+        console.error("Failed to load orders:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    load();
   }, [isLoggedIn, router]);
 
   const filteredOrders = orders.filter((o) => matchesFilter(o, activeFilter));
